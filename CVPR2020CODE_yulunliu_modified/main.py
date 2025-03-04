@@ -315,6 +315,7 @@ def detect_points(im1, im2):
     matcher = cv2.BFMatcher(cv2.NORM_L1, crossCheck=False)
     matches = matcher.match(descriptors1, descriptors2, None)
 
+    matches = list(matches)
     matches.sort(key=lambda x: x.distance, reverse=False)
 
     numGoodMatches = int(len(matches) * 0.15)
@@ -452,12 +453,43 @@ def compute_H(path):
     for i in range(H.shape[0] - 1):
         RR = R_smooth[i + 1] - R[i + 1]
 
-        M1 = np.float32([[1, 0, -tx[i + 1] - margin - 416], [0, 1, -ty[i + 1] - margin - 224], [0, 0, 1]])
-        M11 = np.float32([[s[i + 1] / s_smooth[i + 1], 0, 0], [0, s[i + 1] / s_smooth[i + 1], 0], [0, 0, 1]])
-        M2 = np.float32([[np.cos(RR), -np.sin(RR), 0], [np.sin(RR), np.cos(RR), 0], [0, 0, 1]])
-        M3 = np.float32([[1, 0, tx[i + 1] + margin + 416], [0, 1, ty[i + 1] + margin + 224], [0, 0, 1]])
-        M4 = np.float32([[1, 0, tx_move[i + 1]], [0, 1, ty_move[i + 1]], [0, 0, 1]])
+        # M1 = np.float32([[1, 0, -tx[i + 1] - margin - 416], [0, 1, -ty[i + 1] - margin - 224], [0, 0, 1]])
+        # M11 = np.float32([[s[i + 1] / s_smooth[i + 1], 0, 0], [0, s[i + 1] / s_smooth[i + 1], 0], [0, 0, 1]])
+        # M2 = np.float32([[np.cos(RR), -np.sin(RR), 0], [np.sin(RR), np.cos(RR), 0], [0, 0, 1]])
+        # M3 = np.float32([[1, 0, tx[i + 1] + margin + 416], [0, 1, ty[i + 1] + margin + 224], [0, 0, 1]])
+        # M4 = np.float32([[1, 0, tx_move[i + 1]], [0, 1, ty_move[i + 1]], [0, 0, 1]])
+        # H[i, :, :] = np.matmul(M4, np.matmul(M3, np.matmul(M2, np.matmul(M11, M1))))
+
+        # M1 = np.float32(np.asarray([[1, 0, -tx[i + 1] - margin - 416], [0, 1, -ty[i + 1] - margin - 224], [0, 0, 1]], dtype=object))
+        # M11 = np.float32(np.asarray([[s[i + 1] / s_smooth[i + 1], 0, 0], [0, s[i + 1] / s_smooth[i + 1], 0], [0, 0, 1]], dtype=object))
+        # M2 = np.float32(np.asarray([[np.cos(RR), -np.sin(RR), 0], [np.sin(RR), np.cos(RR), 0], [0, 0, 1]], dtype=object))
+        # M3 = np.float32(np.asarray([[1, 0, tx[i + 1] + margin + 416], [0, 1, ty[i + 1] + margin + 224], [0, 0, 1]], dtype=object))
+        # M4 = np.float32(np.asarray([[1, 0, tx_move[i + 1]], [0, 1, ty_move[i + 1]], [0, 0, 1]], dtype=object))
+        # H[i, :, :] = np.matmul(M4, np.matmul(M3, np.matmul(M2, np.matmul(M11, M1))))
+
+        # cursor修改
+        M1 = np.array([[1.0, 0.0, float(-tx[i + 1][0] - margin - 416)],
+                       [0.0, 1.0, float(-ty[i + 1][0] - margin - 224)],
+                       [0.0, 0.0, 1.0]], dtype=np.float32)
+
+        M11 = np.array([[float(s[i + 1][0] / s_smooth[i + 1]), 0.0, 0.0],
+                        [0.0, float(s[i + 1][0] / s_smooth[i + 1]), 0.0],
+                        [0.0, 0.0, 1.0]], dtype=np.float32)
+
+        M2 = np.array([[float(np.cos(RR)), float(-np.sin(RR)), 0.0],
+                       [float(np.sin(RR)), float(np.cos(RR)), 0.0],
+                       [0.0, 0.0, 1.0]], dtype=np.float32)
+
+        M3 = np.array([[1.0, 0.0, float(tx[i + 1][0] + margin + 416)],
+                       [0.0, 1.0, float(ty[i + 1][0] + margin + 224)],
+                       [0.0, 0.0, 1.0]], dtype=np.float32)
+
+        M4 = np.array([[1.0, 0.0, float(tx_move[i + 1][0])],
+                       [0.0, 1.0, float(ty_move[i + 1][0])],
+                       [0.0, 0.0, 1.0]], dtype=np.float32)
         H[i, :, :] = np.matmul(M4, np.matmul(M3, np.matmul(M2, np.matmul(M11, M1))))
+
+
         if np.isnan(np.min(H[i, :, :])):
             H[i, :, :] = np.zeros((3, 3))
             H[i, 0, 0] = 1.0

@@ -106,7 +106,8 @@ if __name__ == '__main__':
 
     # Directory Setting
     # parser.add_argument('--train', type=str, default='../VideoStabilization/Adobe240/DeepVideoDeblurring_Dataset/DeepVideoDeblurring_Dataset/quantitative_datasets')
-    # parser.add_argument('--out_dir', type=str, default='./output_adacof_train')
+    # parser.add_argument('--out_dir', type=str, default='./output_adacof_train')y
+    
     #parser.add_argument('--load', type=str, default='output/checkpoint/model_epoch042.pth')
     parser.add_argument('--load', type=str, default='FuSta_model/checkpoint/model_epoch050.pth')
     #parser.add_argument('--load', type=str, default='output_pooling_with_mask_decoder_with_mask_softargmax_with_mask/checkpoint/model_epoch049.pth')
