@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 
 #sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
@@ -29,6 +30,7 @@ import models_arbitrary
 
 #from CVPR2020CODE_yulunliu_modified.calculate_video_warping_field import calculate_video_warping_field
 from CVPR2020CODE_yulunliu_modified.calculate_video_warping_field_class import CalculateVideoWrapingField
+from CVPR2020CODE_yulunliu_modified.calculate_video_warping_field_class import convert_video_to_images
 from transnetv2.inference_video_by_onnx import TransNetV2_Onnx
 
 def load_image(imfile):
@@ -162,28 +164,12 @@ class StablizeVideoWithTransNetV2():
         self.fusta_flow_model.to('cuda')
         self.fusta_flow_model.eval()
 
-    def inference_video(self, input_video_path, output_folder):
-        if not os.path.exists(input_video_path):
-            raise FileExistsError(f'Input video path: {input_video_path} does not exist')
+    def fusta_stablize_video(self, input_video_images_folder, output_video_warping_field, output_video_stable_images):
+        '''
+        根据视频仿射场求解视频稳定帧
+        '''
 
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
-
-        # 获取输入视频名
-        input_video_name = os.path.basename(input_video_path).split('.')[0]
-
-        # 创建该视频对应的输出文件夹
-        output_video_folder = os.path.join(output_folder, input_video_name)
-        if not os.path.exists(output_video_folder):
-            os.makedirs(output_video_folder)
-
-        # 创建该视频对应的输出稳定视频帧文件夹
-        output_video_stable_images = os.path.join(output_video_folder, 'stable_images')
-        if not os.path.exists(output_video_stable_images):
-            os.makedirs(output_video_stable_images)
-
-        # 计算输入视频仿射场
-        input_video_images_folder, output_video_warping_field = self.calculate_warping_field.inference_video(input_video_path, output_folder)
+        print(f'-----------StablizeVideoWithTransNetV2/fusta_stablize_video----------')
 
         GAUSSIAN_FILTER_KSIZE = self.fusta_args.temporal_width
         gaussian_filter = cv2.getGaussianKernel(GAUSSIAN_FILTER_KSIZE, -1)
@@ -484,14 +470,131 @@ class StablizeVideoWithTransNetV2():
                 loss += summed_mask
             print(loss)
 
-            # 将稳定后的图片合成视频
-            output_stable_video_path = synthetic_stabilized_video(input_video_path, output_video_folder,
-                                                                  output_video_stable_images)
-
-            # 合并原始视频和稳定后的视频
-            combine_video(input_video_path, output_stable_video_path, output_video_folder)
-
             print(f'Complete video stabilization for {input_video_path}')
+
+    def inference_enrire_video(self, input_video_path, output_folder):
+        '''
+        推理整个视频，不进行镜头分割
+        '''
+        if not os.path.exists(input_video_path):
+            raise FileExistsError(f'Input video path: {input_video_path} does not exist')
+
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        # 获取输入视频名
+        input_video_name = os.path.basename(input_video_path).split('.')[0]
+
+        # 创建该视频对应的输出文件夹
+        output_video_folder = os.path.join(output_folder, input_video_name)
+        if not os.path.exists(output_video_folder):
+            os.makedirs(output_video_folder)
+
+        # 创建该视频对应的输出稳定视频帧文件夹
+        output_video_stable_images = os.path.join(output_video_folder, 'stable_images')
+        if not os.path.exists(output_video_stable_images):
+            os.makedirs(output_video_stable_images)
+
+        # 计算输入视频仿射场
+        input_video_images_folder, output_video_warping_field = self.calculate_warping_field.inference_video(input_video_path, output_folder)
+
+        # fusta根据视频仿射场信息求解稳定帧
+        self.fusta_stablize_video(input_video_images_folder, output_video_warping_field, output_video_stable_images)
+
+        # 将稳定后的图片合成视频
+        output_stable_video_path = synthetic_stabilized_video(input_video_path, output_video_folder, output_video_stable_images)
+
+        # 合并原始视频和稳定后的视频
+        combine_video(input_video_path, output_stable_video_path, output_video_folder)
+
+    def inference_video_with_divide_scene(self, input_video_path, output_folder):
+        '''
+        先将视频通过分镜划分成多段视频，然后对每一段视频分别进行稳定
+        '''
+        if not os.path.exists(input_video_path):
+            raise FileNotFoundError(f'{input_video_path} is not exist')
+
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        # 获取输入视频名
+        input_video_name = os.path.basename(input_video_path).split('.')[0]
+
+        # 创建该视频对应的输出文件夹
+        output_video_folder = os.path.join(output_folder, input_video_name)
+        if not os.path.exists(output_video_folder):
+            os.makedirs(output_video_folder)
+
+        # 创建该视频对应的输出稳定视频帧文件夹
+        output_video_stable_images = os.path.join(output_video_folder, 'stable_images')
+        if not os.path.exists(output_video_stable_images):
+            os.makedirs(output_video_stable_images)
+        else:
+            shutil.rmtree(output_video_stable_images)
+            # 重新创建文件夹
+            os.makedirs(output_video_stable_images)
+
+        # 分割视频到图片文件夹
+        input_video_split_image_save_folder = os.path.join(output_video_folder, 'input_video_split_image')
+        if not os.path.exists(input_video_split_image_save_folder):
+            os.makedirs(input_video_split_image_save_folder)
+        else:
+            shutil.rmtree(input_video_split_image_save_folder)
+            # 重新创建文件夹
+            os.makedirs(input_video_split_image_save_folder)
+
+        print(f'convert video {input_video_path} to images floder {input_video_split_image_save_folder}')
+        convert_video_to_images(input_video_path, input_video_split_image_save_folder)
+
+        # 创建该视频对应的scenes操作文件夹
+        input_video_split_scenes_save_folder = os.path.join(output_video_folder, 'split_scenes')
+        if not os.path.exists(input_video_split_scenes_save_folder):
+            os.makedirs(input_video_split_scenes_save_folder)
+        else:
+            shutil.rmtree(input_video_split_scenes_save_folder)
+            # 重新创建文件夹
+            os.makedirs(input_video_split_scenes_save_folder)
+
+        # 计算场景分镜
+        divide_scenes_result = self.transnetv2.inference_video(input_video_path, '', False)
+
+        # 按每一个场景进行视频稳定帧求解
+        all_scenes_stable_images_folder = []
+        for i, scene in enumerate(divide_scenes_result):
+            print(f'process scene {i}')
+
+            # 求解该场景的仿射场
+            scene_input_video_images_folder, scene_output_video_warping_field, scene_output_video_stable_images = self.calculate_warping_field.inference_video_divide_scene(input_video_name, i, scene, input_video_split_image_save_folder, input_video_split_scenes_save_folder)
+
+            # 根据仿射场利用fusta稳定视频
+            self.fusta_stablize_video(scene_input_video_images_folder, scene_output_video_warping_field, scene_output_video_stable_images)
+
+            all_scenes_stable_images_folder.append(scene_output_video_stable_images)
+
+        # 将所有场景的视频稳定帧按顺序都拷贝到最后的视频输出stable images文件夹
+        copy_scenes_stable_images_to_video_stable_images_folder(all_scenes_stable_images_folder, output_video_stable_images)
+
+        # 将稳定后的图片合成视频
+        output_stable_video_path = synthetic_stabilized_video(input_video_path, output_video_folder, output_video_stable_images)
+
+        # 合并原始视频和稳定后的视频
+        combine_video(input_video_path, output_stable_video_path, output_video_folder)
+
+def copy_scenes_stable_images_to_video_stable_images_folder(all_scenes_stable_images_folder, output_video_stable_images):
+    current_output_image_index = 1
+    for i, stable_images_folder in enumerate(all_scenes_stable_images_folder):
+        # 获取当前场景stable_images文件夹下所有图片
+        image_paths = sorted([os.path.join(stable_images_folder, file) for file in os.listdir(stable_images_folder) if file.lower().endswith('.png')])
+
+        for image_path in image_paths:
+            src_image_path = image_path
+
+            dst_image_name = f'{current_output_image_index:05d}.png'
+            dst_image_path = os.path.join(output_video_stable_images, dst_image_name)
+
+            shutil.copy2(src_image_path, dst_image_path)
+
+            current_output_image_index += 1
 
 
 def synthetic_stabilized_video(input_original_video_path, output_video_folder, output_video_stable_imags):
@@ -637,7 +740,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     #input_video_path = args.input_video_path
-    input_video_path = './inference_test/input_videos/input_video.mp4'
+    #input_video_path = './inference_test/input_videos/input_video.mp4'
+    input_video_path = './inference_test/input_videos/piaoliu_resize.mp4'
     output_folder = './inference_test/output'
 
     build_encoder_weight_path = './CVPR2020CODE_yulunliu_modified/baseline-resnet50dilated-ppm_deepsup/encoder_epoch_20.pth'
@@ -659,4 +763,8 @@ if __name__ == '__main__':
                                                                  fusta_args=args,
                                                                  fusta_flow_model_weight_path=fusta_flow_model_weight_path)
 
-    stablize_video_with_transnetv2.inference_video(input_video_path=input_video_path, output_folder=output_folder)
+    # 将一个视频作为整体进行视频稳定
+    #stablize_video_with_transnetv2.inference_enrire_video(input_video_path=input_video_path, output_folder=output_folder)
+
+    # 将一个视频先划分为多个视频片段，然后再进行视频稳定处理
+    stablize_video_with_transnetv2.inference_video_with_divide_scene(input_video_path=input_video_path, output_folder=output_folder)

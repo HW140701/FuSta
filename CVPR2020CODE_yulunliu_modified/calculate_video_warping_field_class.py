@@ -1366,6 +1366,403 @@ class CalculateVideoWrapingField():
 
             return input_video_split_image_save_folder, output_video_warping_field_floder
 
+    def inference_video_divide_scene(self, input_video_name, divide_scene_index, divide_scene, input_video_split_image_save_folder, input_video_split_scenes_save_folder):
+        print(f'-----------CalculateVideoWrapingField/inference_video_divide_scene----------')
+        # 创建对应的scene输出文件夹
+        output_video_scene_folder = os.path.join(input_video_split_scenes_save_folder, f'scene_{divide_scene_index}')
+        if not os.path.exists(output_video_scene_folder):
+            os.makedirs(output_video_scene_folder)
+        else:
+            shutil.rmtree(output_video_scene_folder)
+            # 重新创建文件夹
+            os.makedirs(output_video_scene_folder)
+
+        # 创建scene文件夹中的分割图片存储文件夹，存储从视频分割文件夹中拷贝的对应的该场景图片
+        output_video_scene_input_split_image_save_folder = os.path.join(output_video_scene_folder, 'input_video_split_image')
+        if not os.path.exists(output_video_scene_input_split_image_save_folder):
+            os.makedirs(output_video_scene_input_split_image_save_folder)
+
+        # 创建存储该视频段对应的warping field文件夹
+        output_video_scene_warping_field_floder = os.path.join(output_video_scene_folder, 'warping_field')
+        if not os.path.exists(output_video_scene_warping_field_floder):
+            os.makedirs(output_video_scene_warping_field_floder)
+
+        # 创建存储该视频段对应的result video文件夹
+        output_video_scene_result_video_folder = os.path.join(output_video_scene_folder, 'result_video')
+        if not os.path.exists(output_video_scene_result_video_folder):
+            os.makedirs(output_video_scene_result_video_folder)
+
+        # 创建存储该视频段对应的fusta的stable images文件夹
+        output_video_scene_stable_images = os.path.join(output_video_scene_folder, 'stable_images')
+        if not os.path.exists(output_video_scene_stable_images):
+            os.makedirs(output_video_scene_stable_images)
+
+        # 拷贝该分割场景视频片段对应的图片到场景文件夹中的对应文件夹
+        copy_video_scene_images(divide_scene, input_video_split_image_save_folder, output_video_scene_input_split_image_save_folder)
+
+        # 推理
+        with torch.no_grad():
+            xv, yv = np.meshgrid(np.linspace(-1, 1, 832 + 2 * margin), np.linspace(-1, 1, 448 + 2 * margin))
+            xv = np.expand_dims(xv, axis=2)
+            yv = np.expand_dims(yv, axis=2)
+            grid = np.expand_dims(np.concatenate((xv, yv), axis=2), axis=0)
+            grid_large = np.repeat(grid, 1, axis=0)
+            grid_large = Variable(torch.from_numpy(grid_large).float().to(self.device), requires_grad=False)
+
+            xv, yv = np.meshgrid(np.linspace(1, 832, 832), np.linspace(1, 448, 448))
+            xv = np.expand_dims(xv, axis=2)
+            yv = np.expand_dims(yv, axis=2)
+            grid_full = np.concatenate((xv, yv), axis=2)
+            grid_full = np.reshape(grid_full, (448 * 832, 2))
+
+            U1 = np.zeros((Nkeep, (832 + 2 * margin) * (448 + 2 * margin)))
+            V1 = np.zeros((Nkeep, (832 + 2 * margin) * (448 + 2 * margin)))
+            for i in range(0, Nkeep):
+                temp = self.U[i, :].reshape((256, 512))
+                temp = cv2.resize(temp, ((832 + 2 * margin), (448 + 2 * margin)))
+                U1[i, :] = temp.reshape(1, (832 + 2 * margin) * (448 + 2 * margin))
+                temp = self.V[i, :].reshape((256, 512))
+                temp = cv2.resize(temp, ((832 + 2 * margin), (448 + 2 * margin)))
+                V1[i, :] = temp.reshape(1, (832 + 2 * margin) * (448 + 2 * margin))
+            U = torch.from_numpy(U1).float()
+            V = torch.from_numpy(V1).float()
+            base = torch.cat((U, V), 0).t()
+
+            H, H_inv = compute_H(output_video_scene_input_split_image_save_folder)
+            if not os.path.exists(output_video_scene_warping_field_floder):
+                os.makedirs(output_video_scene_warping_field_floder)
+            for iii in range(H_inv.shape[0]):
+                # np.save(output_video_warping_field_floder + str(iii).zfill(5) + '_H_inv.npy', H_inv[iii, :, :])
+                np.save(os.path.join(output_video_scene_warping_field_floder, str(iii).zfill(5) + '_H_inv.npy'), H_inv[iii, :, :])
+
+            all_images = sorted(glob.glob(os.path.join(output_video_scene_input_split_image_save_folder, '*.png')))
+            numframe = len(all_images)
+            print(f'inference_video_divide_scene - input images num:{numframe}')
+            tmp_img = cv2.imread(all_images[0])
+            height = tmp_img.shape[0]
+            width = tmp_img.shape[1]
+            nseg = np.ceil(float(numframe) / float(SEG))
+            TOTAL_MAS = np.ones((448 + 2 * margin, 832 + 2 * margin))
+
+            writer = cv2.VideoWriter(os.path.join(output_video_scene_result_video_folder, input_video_name + '_out.avi'), cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), 29, (832 + 2 * margin, 448 + 2 * margin))  # vid_reader.get(cv2.CAP_PROP_FPS)
+            writer_mask = cv2.VideoWriter(os.path.join(output_video_scene_result_video_folder, input_video_name + '_out_mask.avi'), cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), 29, (832 + 2 * margin, 448 + 2 * margin))  # vid_reader.get(cv2.CAP_PROP_FPS)
+            counter = 1
+            counter2 = 1
+            if not os.path.exists(output_video_scene_warping_field_floder):
+                os.makedirs(output_video_scene_warping_field_floder)
+            # np.save(output_video_warping_field_floder + str(0).zfill(5) + '.npy', torch.zeros(2, height, width).permute(1, 2, 0).cpu().numpy())
+            np.save(os.path.join(output_video_scene_warping_field_floder, str(0).zfill(5) + '.npy'), torch.zeros(2, height, width).permute(1, 2, 0).cpu().numpy())
+
+            for ite2 in range(int(nseg)):
+                all_frames = sorted(glob.glob(os.path.join(output_video_scene_input_split_image_save_folder, '*.png')))
+
+                # cap = cv2.VideoCapture(video_path)
+                skip = 0
+                cu = 0
+                video = np.zeros((SEG, height, width, 3))
+                # while(cap.isOpened()):
+                for iiiii in all_frames:
+                    ret = True
+                    frame = cv2.imread(iiiii)
+                    # ret, frame = cap.read()
+                    if ret == True:
+                        skip = skip + 1
+                        if skip < ite2 * (SEG - 1) + 1:
+                            continue
+                        else:
+                            video[cu, :, :, :] = frame
+                            cu = cu + 1
+                            failcount = 0
+                    if cu == SEG:
+                        break
+                    if ret == False:
+                        failcount = failcount + 1
+                    if failcount > 20:
+                        break
+                # cap.release()
+                video = video[:cu, :, :, :]
+                if video.shape[0] == 0:
+                    break
+                while (np.max(video[0, :, :, :]) == 0):
+                    video = video[1:, :, :, :]
+
+                res = np.zeros((video.shape[0], 448, 832, 3))
+                for i in range(0, video.shape[0]):
+                    res[i, :, :, :] = cv2.resize(video[i, :, :, :], (832, 448))
+                video = res.copy()
+
+                realnframe = video.shape[0]
+
+                del res
+
+                optic, video, mask, mask_object = compute_flow_seg(self.flow_model, base, self.segmentation_module, video, H, ite2 * (SEG - 1))
+                MASK = np.ones((video.shape[0], 1, 448 + 2 * margin, 832 + 2 * margin))
+
+                if ite2 > 0:
+                    optic[0, 0:2, :, :] = optic[0, 0:2, :, :] - lastwarp.cpu()
+                    MASK[0, :, :, :] = lastmask
+
+                rou = 2
+                warp_acc = torch.zeros(video.shape[0] - 2, 2, video.shape[1], video.shape[2]).cuda()
+                for ITE1 in range(rou):
+                    print(ITE1)
+                    warp = torch.zeros(video.shape[0] - 2, 2, video.shape[1], video.shape[2])
+                    result = torch.zeros(video.shape[0], video.shape[1], video.shape[2], 3)
+                    print(result.shape)
+                    # import pdb
+                    # pdb.set_trace()
+                    warping_fields = torch.zeros(video.shape[0], 2, video.shape[1], video.shape[2])
+                    H_invs = np.zeros((video.shape[0], 3, 3))
+                    for i in range(0, video.shape[0] - nframe):
+                        if i == 0:
+                            optic_temp = optic[i:i + nframe, :, :, :].cuda()
+                            optic_temp[:, 2, :, :] = torch.from_numpy(mask[i:i + nframe, :, :]).cuda()
+                            optic_temp = optic_temp.view(optic_temp.shape[0] * optic_temp.shape[1], optic_temp.shape[2],
+                                                         optic_temp.shape[3]).unsqueeze(0)
+                            oup = self.mpi_net35_model(optic_temp)
+
+                            oup = oup[0, 0:2, :, :].permute((1, 2, 0)).view((448 + 2 * margin) * (832 + 2 * margin), 2)
+                            mask1 = optic[i + 1, 2, :, :].view(-1)
+                            Q = base[mask1 > 0]
+                            c = torch.mm(torch.mm((torch.mm(Q.t(), Q) + rho * torch.eye(2 * Nkeep)).inverse(), Q.t()),
+                                         oup[mask1 > 0].cpu())
+                            oup2 = torch.mm(base, c).cuda()
+                            oup = oup2
+                            oup = oup.view(448 + 2 * margin, 832 + 2 * margin, 2).permute((2, 0, 1)).unsqueeze(
+                                0)  # .cuda()
+
+                            warp_acc[i, :, :, :] = warp_acc[i, :, :, :] + oup[:, 0:2, :, :].data
+                            warp[i, :, :, :] = oup[:, 0:2, :, :].data.cpu()
+                            warping_fields[i, :, :, :] = warp_acc[i, :, :, :]
+
+                            if ITE1 == rou - 1:
+                                warp_acc[i, 0, :, :] = torch.from_numpy(
+                                    gaussian_filter(warp_acc[i, 0, :, :].data.cpu().numpy(), sigma=3))
+                                warp_acc[i, 1, :, :] = torch.from_numpy(
+                                    gaussian_filter(warp_acc[i, 1, :, :].data.cpu().numpy(), sigma=3))
+                                warping_fields[i, :, :, :] = warp_acc[i, :, :, :]
+
+                                newimages = F.grid_sample(
+                                    torch.from_numpy(np.transpose(video[i + 1, :, :, :], (2, 0, 1))).unsqueeze(
+                                        0).float().cuda(),
+                                    grid_large + warp_acc[i, :, :, :].unsqueeze(0).permute(0, 2, 3, 1)).data.cpu()
+                                newmasks = F.grid_sample(torch.from_numpy(
+                                    np.transpose(np.expand_dims(mask[i + 1, :, :], -1), (2, 0, 1))).unsqueeze(
+                                    0).float().cuda(), grid_large + warp_acc[i, :, :, :].unsqueeze(0).permute(0, 2, 3,
+                                                                                                              1)).data.cpu()
+                                MAS = F.grid_sample(
+                                    torch.from_numpy(mask[i + 1, :, :]).unsqueeze(0).unsqueeze(0).float().cuda(),
+                                    grid_large + warp_acc[i, :, :, :].unsqueeze(0).permute(0, 2, 3, 1)).data.cpu()
+                                if ite2 > 0:
+                                    result[i, :, :, :] = F.grid_sample(
+                                        torch.from_numpy(np.transpose(video[i, :, :, :], (2, 0, 1))).unsqueeze(
+                                            0).float().cuda(),
+                                        grid_large + lastwarp.cuda().unsqueeze(0).permute(0, 2, 3,
+                                                                                          1)).data.cpu().permute(0, 2,
+                                                                                                                 3, 1)
+                                    warping_fields[i, :, :, :] = warp_acc[i, :, :, :]
+                                else:
+                                    result[i, :, :, :] = torch.from_numpy(video[i, :, :, :])
+                                    warping_fields[i, :, :, :] = warp_acc[i, :, :, :]
+                                result[i + 1, :, :, :] = newimages.permute(0, 2, 3, 1)
+                                MASK[i + 1, :, :, :] = MAS
+
+                        elif i == video.shape[0] - nframe - 1:
+                            optic_temp = optic[i:i + nframe, :, :, :].cuda()
+                            optic_temp[:, 2, :, :] = torch.from_numpy(mask[i:i + nframe, :, :]).cuda()
+                            optic_temp[0, 0:2, :, :] = optic_temp[0, 0:2, :, :] - oup[0, 0:2, :, :]
+                            optic_temp = optic_temp.view(optic_temp.shape[0] * optic_temp.shape[1], optic_temp.shape[2],
+                                                         optic_temp.shape[3]).unsqueeze(0)
+                            oup = self.mpi_net35_model(optic_temp)
+
+                            if ITE1 == rou - 1:
+                                print(video.shape)
+                                newimages = np.transpose(video[i:i + nframe + 1, :, :, :], (0, 3, 1, 2))
+                                newmasks = np.transpose((np.expand_dims(mask, -1))[i:i + nframe + 1, :, :, :],
+                                                        (0, 3, 1, 2))
+                            for ite in range(0, nframe - 1):
+
+                                oup1 = oup[0, 2 * ite:2 * ite + 2, :, :].permute((1, 2, 0)).view(
+                                    (448 + 2 * margin) * (832 + 2 * margin), 2)
+                                mask1 = optic[i + ite + 1, 2, :, :].view(-1)  # test_mask[i+1,0,:,:].view(-1)#
+                                Q = base[mask1 > 0]
+                                c = torch.mm(
+                                    torch.mm((torch.mm(Q.t(), Q) + rho * torch.eye(2 * Nkeep)).inverse(), Q.t()),
+                                    oup1[mask1 > 0].cpu())
+                                oup2 = torch.mm(base, c).cuda()
+                                oup1 = oup2
+                                oup1 = oup1.view(448 + 2 * margin, 832 + 2 * margin, 2).permute((2, 0, 1)).unsqueeze(0)
+                                warp[i + ite, :, :, :] = oup1[:, 0:2, :, :].data
+                                warp_acc[i + ite, :, :, :] = warp_acc[i + ite, :, :, :] + oup1[:, 0:2, :, :].data
+                                warping_fields[i + ite, :, :, :] = warp_acc[i + ite, :, :, :]
+
+                                if ITE1 == rou - 1:
+                                    warp_acc[i + ite, 0, :, :] = torch.from_numpy(
+                                        gaussian_filter(warp_acc[i + ite, 0, :, :].data.cpu().numpy(), sigma=3))
+                                    warp_acc[i + ite, 1, :, :] = torch.from_numpy(
+                                        gaussian_filter(warp_acc[i + ite, 1, :, :].data.cpu().numpy(), sigma=3))
+                                    MAS = F.grid_sample(
+                                        torch.from_numpy(mask[i + ite + 1, :, :]).unsqueeze(0).unsqueeze(
+                                            0).float().cuda(),
+                                        grid_large + warp_acc[i + ite, :, :, :].unsqueeze(0).permute(0, 2, 3,
+                                                                                                     1)).data.cpu()
+                                    lastwarp = warp_acc[i - 1, :, :, :]
+                                    newimages[ite + 1, :, :, :] = F.grid_sample(
+                                        torch.from_numpy(newimages[ite + 1, :, :, :]).unsqueeze(0).float().cuda(),
+                                        grid_large + warp_acc[i + ite, :, :, :].unsqueeze(0).permute(0, 2, 3,
+                                                                                                     1)).data.cpu()
+                                    MASK[i + 1, :, :, :] = MAS
+                                    newmasks[ite + 1, :, :, :] = F.grid_sample(
+                                        torch.from_numpy(newmasks[ite + 1, :, :, :]).unsqueeze(0).float().cuda(),
+                                        grid_large + warp_acc[i + ite, :, :, :].unsqueeze(0).permute(0, 2, 3,
+                                                                                                     1)).data.cpu()
+
+                                    warping_fields[i, :, :, :] = warp_acc[i, :, :, :]
+                            if ITE1 == rou - 1:
+                                # print(i)
+                                # print(result.shape)
+                                # print(MASK.shape)
+                                # print(newimages.shape)
+                                # print(MAS.shape)
+                                # import pdb
+                                # pdb.set_trace()
+                                result[i + 1:i + nframe + 1, :, :, :] = torch.from_numpy(
+                                    np.transpose(newimages[1:, :, :, :], (0, 2, 3, 1)))
+                                MASK[i + 1:i + nframe + 1, :, :, :] = newmasks[1:, :, :, :]
+                                warping_fields[i + 1:i + nframe + 1, :, :, :] = warp_acc[1, :, :, :]
+                        else:
+                            optic_temp = optic[i:i + nframe, :, :, :].cuda()
+                            optic_temp[:, 2, :, :] = torch.from_numpy(mask[i:i + nframe, :, :]).cuda()
+                            optic_temp[0, 0:2, :, :] = optic_temp[0, 0:2, :, :] - oup[0, 0:2, :, :]
+                            optic_temp = optic_temp.view(optic_temp.shape[0] * optic_temp.shape[1], optic_temp.shape[2],
+                                                         optic_temp.shape[3]).unsqueeze(0)
+                            oup = self.mpi_net35_model(optic_temp)
+
+                            oup = oup[0, 0:2, :, :].permute((1, 2, 0)).view((448 + 2 * margin) * (832 + 2 * margin), 2)
+                            mask1 = optic[i + 1, 2, :, :].view(-1)  # test_mask[i+1,0,:,:].view(-1)#
+                            Q = base[mask1 > 0]
+                            c = torch.mm(torch.mm((torch.mm(Q.t(), Q) + rho * torch.eye(2 * Nkeep)).inverse(), Q.t()),
+                                         oup[mask1 > 0].cpu())
+                            oup2 = torch.mm(base, c).cuda()
+                            oup = oup2
+                            oup = oup.view(448 + 2 * margin, 832 + 2 * margin, 2).permute((2, 0, 1)).unsqueeze(0)
+
+                            warp[i, :, :, :] = oup[:, 0:2, :, :].data.cpu()
+                            warp_acc[i, :, :, :] = warp_acc[i, :, :, :] + oup[:, 0:2, :, :].data
+
+                            warping_fields[i, :, :, :] = warp_acc[i, :, :, :]
+
+                            if ITE1 == rou - 1:
+                                warp_acc[i, 0, :, :] = torch.from_numpy(
+                                    gaussian_filter(warp_acc[i, 0, :, :].data.cpu().numpy(), sigma=3))
+                                warp_acc[i, 1, :, :] = torch.from_numpy(
+                                    gaussian_filter(warp_acc[i, 1, :, :].data.cpu().numpy(), sigma=3))
+
+                                MAS = F.grid_sample(
+                                    torch.from_numpy(mask[i + 1, :, :]).unsqueeze(0).unsqueeze(0).float().cuda(),
+                                    grid_large + warp_acc[i, :, :, :].unsqueeze(0).permute(0, 2, 3, 1)).data.cpu()
+                                newimages = F.grid_sample(
+                                    torch.from_numpy(np.transpose(video[i + 1, :, :, :], (2, 0, 1))).unsqueeze(
+                                        0).float().cuda(),
+                                    grid_large + warp_acc[i, :, :, :].unsqueeze(0).permute(0, 2, 3, 1)).data.cpu()
+                                newmasks = F.grid_sample(torch.from_numpy(
+                                    np.transpose(np.expand_dims(mask[i + 1, :, :], -1), (2, 0, 1))).unsqueeze(
+                                    0).float().cuda(), grid_large + warp_acc[i, :, :, :].unsqueeze(0).permute(0, 2, 3,
+                                                                                                              1)).data.cpu()
+
+                                warping_fields[i, :, :, :] = warp_acc[i, :, :, :]
+                                H_invs[i, :, :] = H_inv[i + ite2 * (SEG - 1) - 1, :, :]
+                                # category_name = sys.argv[1].split('/')[-2]
+                                # sq_name = sys.argv[1].split('/')[-1][:-4]
+                                # if not os.path.exists('NUS_warping_field/'+category_name+'/'+sq_name):
+                                #     os.makedirs('NUS_warping_field/'+category_name+'/'+sq_name)
+                                # np.save('NUS_warping_field/'+category_name+'/'+sq_name+'/'+str(i).zfill(5)+'.npy', warp_acc[i, :, :, :].permute(1, 2, 0).cpu().numpy())
+                                # np.save('NUS_warping_field/'+category_name+'/'+sq_name+'/'+str(i).zfill(5)+'_H_inv.npy', H_inv[i + ite2 * (SEG - 1), :, :])
+
+                                # sq_name = sys.argv[1].split('/')[-1][:-4]
+                                # if not os.path.exists('ECCV2018_warping_field/' + sq_name):
+                                #     os.makedirs('ECCV2018_warping_field/' + sq_name)
+                                # np.save('ECCV2018_warping_field/' + sq_name + '/' + str(i).zfill(5) + '.npy', warp_acc[i, :, :, :].permute(1, 2, 0).cpu().numpy())
+                                # np.save('ECCV2018_warping_field/' + sq_name + '/' + str(i).zfill(5) + '_H_inv.npy', H_inv[i+ite2*(SEG-1), :, :])
+
+                                result[i + 1, :, :, :] = newimages.permute(0, 2, 3, 1)
+                                MASK[i + 1, :, :, :] = MAS
+
+                    optic = modify_flow(optic, warp, grid_large)
+
+                # warping_fields = torch.cat((torch.zeros(1, 2, video.shape[1], video.shape[2]), warping_fields), 0)
+
+                del optic, warp, mask, video
+
+                # print(result.shape)
+                # print(MASK.shape)
+                # import pdb
+                # pdb.set_trace()
+
+                original_shape = result.shape[0]
+
+                result = result[:result.shape[0] - nframe - 1, :, :, :].numpy()
+                # warping_fields=warping_fields[:result.shape[0]-nframe-1,:,:,:]
+                # H_invs=H_invs[:result.shape[0]-nframe-1,:,:]
+                # warping_fields = warping_fields[2:]
+
+                H_invs = H_invs[1:]
+
+                MASK = MASK[:original_shape - nframe - 1, :, :, :]
+                totalmask = np.prod(MASK, axis=0)
+                TOTAL_MAS = TOTAL_MAS * totalmask[0, :, :]
+
+                if ite2 < int(nseg) - 1:
+                    lastframe = result[-1, :, :, :].copy()
+                    lastmask = MASK[-1, :, :, :].copy()
+                else:
+                    totalmask = np.prod(MASK, axis=0)
+                    TOTAL_MAS = TOTAL_MAS * totalmask[0, :, :]
+
+                for i in range(result.shape[0]):
+                    # print(result.shape)
+                    # print(MASK.shape)
+                    # print(np.max(result))
+                    # print(np.max(MASK))
+                    # import pdb
+                    # pdb.set_trace()
+                    writer.write(result[i, :, :, :].astype(np.uint8))
+                    # writer_mask.write(np.transpose(MASK[i, :, :, :]*255.0, (1, 2, 0)).astype(np.uint8))
+
+                    if not os.path.exists(output_video_scene_warping_field_floder):
+                        os.makedirs(output_video_scene_warping_field_floder)
+                    # np.save(output_video_warping_field_floder + str(counter).zfill(5) + '.npy', warping_fields[i, :, :, :].permute(1, 2, 0).cpu().numpy())
+                    np.save(os.path.join(output_video_scene_warping_field_floder, str(counter).zfill(5) + '.npy'),
+                            warping_fields[i, :, :, :].permute(1, 2, 0).cpu().numpy())
+
+                    # np.save('NUS_warping_field/' + category_name + '/' + sq_name + '/' + str(counter-1).zfill(5) + '_H_inv.npy', H_invs[i, :, :])
+                    counter += 1
+
+                del result
+            writer.release()
+
+            print('calculate video warping field done')
+
+            return output_video_scene_input_split_image_save_folder, output_video_scene_warping_field_floder, output_video_scene_stable_images
+
+
+
+def copy_video_scene_images(divide_scene, input_video_split_image_save_folder, output_video_scene_input_split_image_save_folder):
+    '''
+    根据划分的场景的图片索引拷贝到scene的文件夹中
+    '''
+    currnet_image_index = 1
+    for i in range(divide_scene[0], divide_scene[1]+1):
+        src_image_name = f'{i+1:05d}.png'
+        dst_image_name = f'{currnet_image_index:05d}.png'
+
+        src_image_path = os.path.join(input_video_split_image_save_folder, src_image_name)
+        dst_image_path = os.path.join(output_video_scene_input_split_image_save_folder, dst_image_name)
+
+        shutil.copy2(src_image_path, dst_image_path)
+
+        currnet_image_index += 1
+
 
 if __name__ == '__main__':
     input_video_path = './inference_test/input_videos/input_video.mp4'
